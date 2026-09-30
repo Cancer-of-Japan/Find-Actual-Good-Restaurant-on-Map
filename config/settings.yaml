@@ -1,0 +1,81 @@
+# Tunable settings. Copy to config/settings.yaml and adjust.
+# All values here are safe defaults.
+
+database:
+  path: data/history.sqlite
+
+output:
+  path: output/report.html
+
+scraper:
+  enabled: true
+  # Randomized delay range (seconds) between actions, to stay polite / low-frequency.
+  # Polite delays also reduce Google throttling that blanks the reviews panel.
+  min_delay: 2.0
+  max_delay: 4.0
+  # Shorter delay range (seconds) between review-scroll passes. Scrolling the same
+  # page to lazy-load more cards isn't a fresh request, so it can be much faster
+  # than min_delay/max_delay; reviews stream in well under a second.
+  scroll_min_delay: 0.6
+  scroll_max_delay: 1.4
+  # Max review-scroll passes before giving up. The loop early-stops once the feed
+  # stops growing, so small places finish fast regardless; this cap only bounds
+  # large places (~10-11 reviews per pass, so 40 ≈ up to ~400 newest reviews).
+  max_scroll_passes: 40
+  # Seconds to wait between restaurants in a batch (avoids rapid-fire throttling).
+  between_places_delay: 6.0
+  headless: false
+  # Attach to a running, logged-in Brave (or any Chromium) that exposes a
+  # DevTools endpoint, instead of launching a throwaway browser. Reusing a
+  # logged-in profile makes Google show the FULL, login-gated review set.
+  # Start Brave first with: brave-browser-stable --remote-debugging-port=9222
+  # (tools/start_brave_debug.sh does this on the remote). Leave blank to launch
+  # a fresh Chromium as before. When set, `headless` is ignored (Brave's own
+  # window is used) and the scraper never closes your Brave -- only its own tab.
+  brave_cdp_url: ""
+  # Tier 1 network-endpoint replay (PROJECT.md §7a). Disabled until the one-time
+  # capture step (M2a) has calibrated the request template on a non-proxied
+  # network; while false, every snapshot uses the Tier 2 DOM scraper.
+  network_replay: false
+  network_replay_max_pages: 20
+  # Order to read the reviews feed before scrolling (DOM tier). Options:
+  # relevant (Google default) | newest | highest_rating | lowest_rating.
+  # newest = cleaner age/trend + deletion diffing; lowest_rating surfaces the
+  # 1★ reviews most likely to be purged.
+  review_sort: newest
+
+# §7b area discovery grid search (overcome the Places API 60-result cap by
+# tiling the area and de-duplicating). Used by `add-area --grid`.
+discovery:
+  block_size_m: 500          # tile spacing (m); 250-300 for dense cores, 1000+ for suburbs
+  tile_overlap_factor: 0.6   # tile radius = block_size * this (boundary coverage)
+  max_recursion_depth: 2     # how many times a saturated tile may auto-split
+  saturation_threshold: 20   # Nearby Search (New) hard cap; hitting it triggers a re-split
+
+analysis:
+  # §7.1 Age proxy confidence
+  low_confidence_review_count: 10
+  # §7.2 Retrospective trend
+  long_term_decline_threshold: 0.7   # early-avg minus recent-avg (stars) to flag decline
+  recent_window_months: 12
+  # §7.4 Live jump detection
+  jump_rating_delta: 0.3             # stars
+  jump_window_days: 30
+  # §7.5 Bimodality
+  polarization_flag_threshold: 0.6   # (hist_1 + hist_5) / total
+  polarization_rating_low: 3.5
+  polarization_rating_high: 4.2
+  # §7.7 Reviewer credibility: a 4-5★ review counts as low-credibility when its
+  # author isn't a Local Guide and has this many lifetime reviews or fewer.
+  low_credibility_max_reviews: 2
+
+# §7.6 Suspicion score weights (0..1 each factor, weighted sum, normalized to 0..100)
+weights:
+  young_and_high_rating: 1.0
+  long_term_decline: 1.5
+  jump_anomaly: 1.5
+  deleted_reviews_negative: 2.0
+  possible_purge_volume_mismatch: 0.75
+  deleted_notice: 1.5
+  polarization: 1.0
+  low_credibility_reviews: 1.0

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Restaurant Trust Filter — Report</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #0f1115; color: #e6e6e6; }
+  header { padding: 16px 24px; border-bottom: 1px solid #2a2e37; }
+  h1 { font-size: 18px; margin: 0; }
+  .meta { color: #8a90a0; font-size: 13px; margin-top: 4px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 24px; border-bottom: 1px solid #2a2e37; align-items: center; }
+  .controls label { font-size: 13px; color: #b8bdc9; display: flex; gap: 6px; align-items: center; }
+  input[type="number"] { width: 64px; background: #1a1d24; color: #e6e6e6; border: 1px solid #333; border-radius: 6px; padding: 4px 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #20242c; white-space: nowrap; }
+  th { cursor: pointer; user-select: none; position: sticky; top: 0; background: #171a20; }
+  th:hover { color: #fff; }
+  tr:hover { background: #161a21; }
+  .score { font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+  .s-hi { background: #5c1a1a; color: #ffb4b4; }
+  .s-mid { background: #5c451a; color: #ffe0a3; }
+  .s-lo { background: #1d3a24; color: #a3ffbf; }
+  .trend-down { color: #ff7a7a; }
+  .trend-up { color: #7affa0; }
+  .trend-flat { color: #9aa0ad; }
+  .detail { background: #12151b; }
+  .detail-inner { padding: 16px 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .reasons { grid-column: 1 / -1; }
+  .reasons ul { margin: 6px 0; }
+  canvas { max-height: 240px; background: #0f1115; border-radius: 8px; }
+  a { color: #7ab7ff; }
+  .empty { padding: 40px 24px; color: #8a90a0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Restaurant Trust Filter</h1>
+  <div class="meta">Generated {{ generated_at }} · {{ count }} restaurant(s) tracked</div>
+</header>
+
+<div class="controls">
+  <label>Min ★ <input type="number" id="f-min-rating" step="0.1" min="0" max="5" /></label>
+  <label>Min suspicion <input type="number" id="f-min-score" min="0" max="100" /></label>
+  <label><input type="checkbox" id="f-declining" /> Declining only</label>
+  <label><input type="checkbox" id="f-deleted" /> Has deleted reviews</label>
+  <label><input type="checkbox" id="f-hide-grid" checked /> Hide discovery-only (grid, no data)</label>
+</div>
+
+{% if count == 0 %}
+<div class="empty">No data yet. Run <code>python cli.py add-link ...</code> then <code>python cli.py snapshot</code>, then <code>python cli.py report</code>.</div>
+{% endif %}
+
+<table id="tbl">
+  <thead>
+    <tr>
+      <th data-k="name">Name</th>
+      <th data-k="source">Src</th>
+      <th data-k="rating">Current ★</th>
+      <th data-k="total_reviews">#</th>
+      <th data-k="age_proxy_date">Age (proxy)</th>
+      <th data-k="trend_dir">Trend</th>
+      <th data-k="jump_anomaly">Jump</th>
+      <th data-k="deleted_count">Deleted</th>
+      <th data-k="polarization">Polar.</th>
+      <th data-k="suspicion_score">Suspicion</th>
+    </tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<script>
+const ROWS = {{ rows_json | safe }};
+let sortKey = "suspicion_score", sortDir = -1;
+
+function trendCell(r) {
+  if (r.long_term_decline > 0) return `<span class="trend-down" title="early vs recent">↓ ${r.long_term_decline}★</span>`;
+  if (r.long_term_improvement > 0) return `<span class="trend-up">↑ ${r.long_term_improvement}★</span>`;
+  return `<span class="trend-flat">→</span>`;
+}
+function scoreClass(s){ return s >= 60 ? "s-hi" : s >= 30 ? "s-mid" : "s-lo"; }
+
+function passesFilter(r) {
+  const minR = parseFloat(document.getElementById("f-min-rating").value);
+  const minS = parseFloat(document.getElementById("f-min-score").value);
+  if (!isNaN(minR) && (r.rating ?? 0) < minR) return false;
+  if (!isNaN(minS) && r.suspicion_score < minS) return false;
+  if (document.getElementById("f-declining").checked && !(r.long_term_decline > 0)) return false;
+  if (document.getElementById("f-deleted").checked && !(r.deleted_count > 0)) return false;
+  if (document.getElementById("f-hide-grid").checked && r.source === "grid" && !r.has_data) return false;
+  return true;
+}
+
+function render() {
+  const tbody = document.getElementById("tbody");
+  tbody.innerHTML = "";
+  const rows = ROWS.filter(passesFilter).sort((a, b) => {
+    const av = a[sortKey] ?? "", bv = b[sortKey] ?? "";
+    return (av > bv ? 1 : av < bv ? -1 : 0) * sortDir;
+  });
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><a href="${r.maps_url}" target="_blank" rel="noopener">${r.name || r.place_id}</a></td>
+      <td><small${r.has_data ? "" : ` style="color:#8a90a0"`} title="${r.has_data ? 'tracked (has snapshots)' : 'discovery-only — no snapshots yet'}">${r.source || "—"}${r.has_data ? "" : " ◦"}</small></td>
+      <td${(r.adjusted_rating != null && r.adjusted_rating !== r.rating) ? ` title="adjusted ≈ ${r.adjusted_rating}★ if removed reviews were all 1★"` : ""}>${r.rating ?? "—"}${(r.adjusted_rating != null && r.adjusted_rating !== r.rating) ? ` <small style="color:#c60">→${r.adjusted_rating}</small>` : ""}</td>
+      <td title="${r.scrape_source === 'network_replay' ? 'full pull (network_replay)' : 'partial sample (dom_scroll_fallback) — age/trend based on ' + (r.reviews_scraped||0) + ' reviews'}">${r.total_reviews ?? "—"}${r.scrape_source === 'network_replay' ? "" : ` <small style="color:#c60">▹${r.reviews_scraped||0}</small>`}</td>
+      <td>${r.age_proxy_date ?? "—"} <small>(${r.age_confidence})</small></td>
+      <td>${trendCell(r)}</td>
+      <td>${r.jump_anomaly > 0 ? "+" + r.jump_anomaly + "★" : "—"}</td>
+      <td>${r.deleted_count || 0}${r.deleted_notice_max > 0 ? ` <small style="color:#c60" title="Google's own removal notice">⚠${r.deleted_notice_max}</small>` : ""}</td>
+      <td>${Math.round((r.polarization || 0) * 100)}%</td>
+      <td><span class="score ${scoreClass(r.suspicion_score)}">${r.suspicion_score}</span></td>`;
+    tr.addEventListener("click", (e) => {
+      if (e.target.tagName === "A") return;
+      toggleDetail(tr, r);
+    });
+    tbody.appendChild(tr);
+  }
+}
+
+function toggleDetail(tr, r) {
+  if (tr.nextElementSibling && tr.nextElementSibling.classList.contains("detail")) {
+    tr.nextElementSibling.remove();
+    return;
+  }
+  const detail = document.createElement("tr");
+  detail.className = "detail";
+  detail.innerHTML = `<td colspan="10"><div class="detail-inner">
+      <div><h4>Retrospective trend (§7.2)</h4><canvas></canvas></div>
+      <div><h4>Star histogram</h4><canvas></canvas></div>
+      <div class="reasons"><h4>Why this score</h4>
+        <ul>${(r.reasons || []).map(x => `<li>${x}</li>`).join("") || "<li>No flags triggered.</li>"}</ul>
+      </div>
+    </div></td>`;
+  tr.after(detail);
+  const [c1, c2] = detail.querySelectorAll("canvas");
+  new Chart(c1, {
+    type: "line",
+    data: {
+      labels: (r.trend_buckets || []).map(b => b.period),
+      datasets: [{ label: "avg ★", data: (r.trend_buckets || []).map(b => b.avg), borderColor: "#7ab7ff", tension: 0.25 }]
+    },
+    options: { scales: { y: { min: 0, max: 5 } } }
+  });
+  new Chart(c2, {
+    type: "bar",
+    data: {
+      labels: ["1★", "2★", "3★", "4★", "5★"],
+      datasets: [{ label: "count", data: r.histogram || [0,0,0,0,0], backgroundColor: "#5c8dff" }]
+    }
+  });
+}
+
+document.querySelectorAll("th").forEach(th => th.addEventListener("click", () => {
+  const k = th.dataset.k;
+  if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = 1; }
+  render();
+}));
+document.querySelectorAll(".controls input").forEach(el => el.addEventListener("input", render));
+render();
+</script>
+</body>
+</html>

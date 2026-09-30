@@ -1,0 +1,32 @@
+# Secrets
+.env
+
+# Personal collected data & generated output
+data/
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Playwright
+playwright-report/
+.cache/
+
+# Local CA bundle (exported from the machine cert store; environment-specific)
+certs/
+
+# Scratch / debug artifacts
+_debug_*.py
+_summary.py
+*.png
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/

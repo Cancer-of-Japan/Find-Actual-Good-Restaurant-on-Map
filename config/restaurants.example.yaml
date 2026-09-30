@@ -1,0 +1,12 @@
+# Seed list of restaurants tracked by manual Google Maps links.
+# Copy to config/restaurants.yaml and add your own.
+#
+# Each entry needs a "url". If you already know the place_id you may add it to
+# skip a lookup. Notes are optional and shown in the report.
+
+restaurants:
+  - url: "https://maps.google.com/?cid=1234567890123456789"
+    note: "example ramen shop a friend recommended"
+
+  - url: "https://www.google.com/maps/place/?q=place_id:ChIJexampleplaceid"
+    note: "suspiciously high rating, opened recently"
