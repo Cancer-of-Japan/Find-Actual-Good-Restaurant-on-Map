@@ -221,6 +221,12 @@ def cmd_snapshot(args, settings) -> None:
                 db.insert_snapshot(snap)
                 return None
 
+            # Best review count any earlier run reliably captured. Used below to
+            # detect a truncated scrape before it can corrupt the deletion signal.
+            prior_snaps = db.get_snapshots(r.place_id)
+            prior_best = max((s.reviews_retrieved_count or 0 for s in prior_snaps),
+                             default=0)
+
             sr = scrape_place(r.maps_url, r.place_id, settings.scraper)
             snap.hist_1, snap.hist_2, snap.hist_3, snap.hist_4, snap.hist_5 = sr.histogram
             snap.scrape_source = sr.source
@@ -235,21 +241,34 @@ def cmd_snapshot(args, settings) -> None:
                 rv.last_seen_snapshot_id = snap_id
                 db.upsert_review(rv)
                 present.add(rv.review_hash)
-            if present:
+            retrieved = len(sr.reviews)
+            # A capture that returns far fewer reviews than a previous run is almost
+            # always Google throttling/flakiness, not mass deletion. Marking the
+            # unseen reviews "missing" would poison the (highest-weighted) deleted-
+            # reviews signal, so we skip the diff and flag the place for a retry.
+            partial = prior_best >= 30 and retrieved < 0.5 * prior_best
+            if partial:
+                print(f"  scraped {retrieved} reviews via {sr.source} "
+                      f"(prev {prior_best}) — looks truncated; NOT marking missing, "
+                      "will retry.")
+            elif present:
                 missing = db.mark_missing_reviews(r.place_id, present, snap_id)
-                print(f"  scraped {len(sr.reviews)} reviews via {sr.source}, "
+                print(f"  scraped {retrieved} reviews via {sr.source}, "
                       f"{missing} newly missing")
             else:
                 print("  scraped 0 reviews (panel not loaded / limited)")
             if sr.deleted_notice_text:
                 est = sr.deleted_notice_max or "unspecified"
                 print(f"  ⚠ Google removal notice (~{est}): {sr.deleted_notice_text}")
-            return {"scraped": len(sr.reviews), "total": total_count, "source": sr.source}
+            return {"scraped": retrieved, "total": total_count,
+                    "source": sr.source, "partial": partial}
 
         def _looks_stuck(status: dict | None) -> bool:
-            """True when a DOM scrape stalled at ~5 cards but the place has more."""
+            """True when a DOM scrape under-collected (stalled early or truncated)."""
             if not status or status["source"] != "dom_scroll_fallback":
                 return False
+            if status.get("partial"):
+                return True
             total = status["total"]
             return status["scraped"] == STUCK_COUNT and (total is None or total > STUCK_COUNT)
 
@@ -264,16 +283,16 @@ def cmd_snapshot(args, settings) -> None:
                 print(f"  ! skipped ({type(exc).__name__}): {exc}")
                 continue
             if _looks_stuck(status):
-                print(f"  ↻ only {STUCK_COUNT} reviews (of {status['total']}); "
+                print(f"  ↻ only {status['scraped']} reviews (of {status['total']}); "
                       "deferring for a second pass.")
                 deferred.append(r)
 
-        # Second pass: re-run the places that stalled at 5 cards, now that the
-        # batch is done and throttling has likely relaxed. Only one extra attempt
-        # each; whatever we get the second time is accepted.
+        # Second pass: re-run the places that under-collected, now that the batch
+        # is done and throttling has likely relaxed. Only one extra attempt each;
+        # whatever we get the second time is accepted.
         if deferred:
-            print(f"\nRe-running {len(deferred)} deferred place(s) that stalled at "
-                  f"{STUCK_COUNT} reviews ...")
+            print(f"\nRe-running {len(deferred)} deferred place(s) that "
+                  "under-collected ...")
             for idx, r in enumerate(deferred):
                 if gap > 0:
                     time.sleep(gap)
@@ -284,7 +303,7 @@ def cmd_snapshot(args, settings) -> None:
                     print(f"  ! skipped ({type(exc).__name__}): {exc}")
                     continue
                 if _looks_stuck(status):
-                    print(f"  · still {STUCK_COUNT} on retry; accepting as-is.")
+                    print(f"  · still low ({status['scraped']}) on retry; accepting as-is.")
     print("Snapshot complete.")
 
 
