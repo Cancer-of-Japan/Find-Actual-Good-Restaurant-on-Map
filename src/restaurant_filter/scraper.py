@@ -112,7 +112,13 @@ def scrape_place(maps_url: str, place_id: str, cfg: dict) -> ScrapeResult:
               "Run: pip install playwright && playwright install chromium")
         return result
 
-    max_passes = int(cfg.get("max_scroll_passes", 40))
+    # Upper safety bound on scroll passes so a misbehaving feed can't loop forever.
+    # It is NOT the normal stop condition: collection ends when every review from
+    # the rating histogram is loaded, or when the feed stops growing for
+    # `scroll_stagnation_limit` consecutive passes (whichever comes first).
+    max_passes = int(cfg.get("max_scroll_passes", 1000))
+    # How many consecutive no-growth passes mean "the feed is exhausted, move on".
+    stagnation_limit = max(1, int(cfg.get("scroll_stagnation_limit", 4)))
     headless = bool(cfg.get("headless", False))
     # Scrolling the *same* page to lazy-load more cards is not a fresh request, so
     # it doesn't need the full between-request politeness delay. Reviews stream in
@@ -226,7 +232,8 @@ def scrape_place(maps_url: str, place_id: str, cfg: dict) -> ScrapeResult:
                 # pointless, so scroll fast (direct container jumps) instead of the
                 # slow humanised wheel + long naps.
                 _scroll_reviews(page, max_passes, scroll_nap,
-                                fast=bool(brave_cdp), target_count=target)
+                                fast=bool(brave_cdp), target_count=target,
+                                stagnation_limit=stagnation_limit)
                 now = datetime.now(timezone.utc)
                 for card, author in _review_cards(page):
                     rv = _parse_card(card, place_id, now, author_hint=author)
@@ -552,8 +559,14 @@ def _find_scroll_container(page):
 
 
 def _scroll_reviews(page, max_passes: int, nap, fast: bool = False,
-                    target_count: int = 0) -> None:
-    """Scroll the reviews container to lazy-load more cards, bounded by max_passes.
+                    target_count: int = 0, stagnation_limit: int = 4) -> None:
+    """Scroll the reviews container to lazy-load more cards until the feed is done.
+
+    Collection stops on the first of: (a) every review promised by the rating
+    histogram is loaded (``target_count``), (b) the card count stops growing for
+    ``stagnation_limit`` consecutive passes (the feed is exhausted -- Google often
+    stops serving well before the nominal total), or (c) the ``max_passes`` safety
+    ceiling is hit (should rarely happen; it only guards against an endless loop).
 
     ``fast`` (used when attached to the user's genuine logged-in browser via CDP)
     skips the humanised mouse curve + chunked wheel + long politeness nap and just
@@ -604,7 +617,7 @@ def _scroll_reviews(page, max_passes: int, nap, fast: bool = False,
             break
         if len(cards) == prev_count:
             stable += 1
-            if stable >= 3:  # no growth after a few tries -> done
+            if stable >= stagnation_limit:  # feed stopped growing -> move on
                 break
         else:
             stable = 0

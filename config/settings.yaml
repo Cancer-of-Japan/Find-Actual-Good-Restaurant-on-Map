@@ -18,10 +18,14 @@ scraper:
   # than min_delay/max_delay; reviews stream in well under a second.
   scroll_min_delay: 0.6
   scroll_max_delay: 1.4
-  # Max review-scroll passes before giving up. The loop early-stops once the feed
-  # stops growing, so small places finish fast regardless; this cap only bounds
-  # large places (~10-11 reviews per pass, so 40 ≈ up to ~400 newest reviews).
-  max_scroll_passes: 40
+  # Safety ceiling on review-scroll passes -- NOT the normal stop condition.
+  # Collection keeps going until every review from the rating histogram is loaded,
+  # or the feed stops growing for `scroll_stagnation_limit` passes in a row. This
+  # cap only guards against an endless loop on a misbehaving feed.
+  max_scroll_passes: 1000
+  # Stop and move on after this many consecutive scroll passes with no new reviews
+  # (the feed is exhausted -- Google often stops serving before the nominal total).
+  scroll_stagnation_limit: 4
   # Seconds to wait between restaurants in a batch (avoids rapid-fire throttling).
   between_places_delay: 6.0
   headless: false
